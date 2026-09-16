@@ -140,8 +140,15 @@ backup before SQL is touched**; data is deleted only with `-PurgeDatabases`.
 | `-KeepDependencies` | Keep Apple Bonjour + Thales Sentinel RMS (removed by default). |
 | `-BackupRoot <path>` | DB backups + transcript location. Default `C:\EVS-Cleaner-Backup`. |
 | `-Reboot` | Reboot + auto-resume via a one-shot SYSTEM startup task (up to 5 cycles) until SQL is fully gone. |
-| `-Gui` | WinForms progress window (local runs only; falls back to console over SSH / SYSTEM). |
+| `-NoGui` | Force console-only (the WinForms progress window is on by default on a local run). |
+| `-CollectLogs` | Always keep the Desktop diagnostic `.zip`, no prompt (kept automatically if any action failed; otherwise offered via a dialog). |
+| `-Gui` | Back-compat no-op; the progress window is now the default. |
 | `-Force` | Skip the "type YES" confirmation. |
+
+Like the installer, the cleaner shows the live progress window by default and drops a Desktop
+diagnostic `.zip` (transcript + a snapshot of any remaining EVS/SQL services and ARP entries)
+to email back — automatically on any failure, or by prompt on a clean run. The full transcript
+is always written to `-BackupRoot` regardless.
 
 Running the cleaner's **dry run** on a unit is also the quickest way to see the exact
 footprint (services, instances, folders, ARP keys) a given XFile3 version leaves behind.

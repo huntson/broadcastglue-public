@@ -42,10 +42,20 @@
     gone, then clears the SQL registry remnants and removes the task.
 
 .PARAMETER Gui
-    Show a GUI progress window (WinForms): status line + progress bar + live log. LOCAL
-    runs on the unit only - a window can't display over SSH or in the SYSTEM resume pass,
-    where it safely falls back to console output. Without -Force, the confirmation becomes
-    a Yes/No dialog instead of a console prompt.
+    Retained for back-compat. The GUI progress window (WinForms: status line + progress bar +
+    live log) is now shown BY DEFAULT on a local interactive run; over SSH or in the SYSTEM
+    resume pass it safely falls back to console. Without -Force the confirmation is a Yes/No
+    dialog instead of a console prompt. Use -NoGui to force console-only.
+
+.PARAMETER NoGui
+    Force console-only output (disable the default GUI progress window).
+
+.PARAMETER CollectLogs
+    Always keep the Desktop diagnostic .zip (transcript(s) + a snapshot of remaining EVS/SQL
+    services and ARP entries), no prompt. The bundle is kept automatically if any action failed;
+    on a clean interactive run it is otherwise offered via a Yes/No dialog. Nothing is
+    transmitted - the .zip is emailed back manually. (The full transcript is always written to
+    -BackupRoot regardless.)
 
 .PARAMETER Force
     Skip the "type YES" confirmation before destructive execution.
@@ -67,7 +77,9 @@ param(
     [switch] $KeepDependencies,
     [string] $BackupRoot = "C:\EVS-Cleaner-Backup",
     [switch] $Reboot,
-    [switch] $Gui,
+    [switch] $Gui,          # retained for back-compat; GUI is now on by default (see -NoGui)
+    [switch] $NoGui,        # force console-only (GUI defaults on when a desktop is present)
+    [switch] $CollectLogs,  # always keep the Desktop diagnostic .zip, no prompt (automation)
     [switch] $Force
 )
 
@@ -96,7 +108,7 @@ function Good($m){ Write-Host "    $m" -ForegroundColor Green; Gui-Log "    $m" 
 
 # Every state-changing action funnels through here: dry run just prints the plan.
 function Act([string]$desc, [scriptblock]$do){
-    if ($Execute) { Info "DO   : $desc"; try { & $do } catch { Warn "  ! $($_.Exception.Message)" } }
+    if ($Execute) { Info "DO   : $desc"; try { & $do } catch { $script:errCount++; Warn "  ! $($_.Exception.Message)" } }
     else          { Warn "PLAN : $desc" }
 }
 
@@ -135,6 +147,7 @@ function Get-EvsServices {
 if (-not (Test-Path $BackupRoot)) { New-Item -ItemType Directory -Force -Path $BackupRoot | Out-Null }
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $log   = Join-Path $BackupRoot "cleaner-$stamp.log"
+$script:errCount = 0                                       # action failures, for auto-keeping logs
 Start-Transcript -Path $log -Append | Out-Null
 
 Write-Host "=================================================================" -ForegroundColor Cyan
@@ -144,7 +157,7 @@ Write-Host " Log:  $log" -ForegroundColor Cyan
 Write-Host "=================================================================" -ForegroundColor Cyan
 
 # ---------------------------------------------------------------- GUI (optional, local runs only)
-$script:Gui = $Gui.IsPresent
+$script:Gui = (-not $NoGui) -and [Environment]::UserInteractive   # on by default; -NoGui or headless => console
 $script:form = $null; $script:pb = $null; $script:lbl = $null; $script:logbox = $null; $script:btn = $null
 if ($script:Gui) {
     try {
@@ -186,6 +199,26 @@ function Gui-Status([string]$s, [int]$bump = 0) {
         if ($s)          { $script:lbl.Text = $s }
         if ($bump -gt 0) { $script:pb.Value = [Math]::Min(100, $script:pb.Value + $bump) }
         [System.Windows.Forms.Application]::DoEvents()
+    } catch {}
+}
+# Yes/No dialog: $true/$false interactively, $null when headless (SYSTEM resume / SSH).
+function Confirm-Gui($text, $title) {
+    if (-not [Environment]::UserInteractive) { return $null }
+    try {
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+        $r = [System.Windows.Forms.MessageBox]::Show($text, $title,
+                 [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                 [System.Windows.Forms.MessageBoxIcon]::Question)
+        return ($r -eq [System.Windows.Forms.DialogResult]::Yes)
+    } catch { return $null }
+}
+function Notify-Gui($text, $title) {
+    if (-not [Environment]::UserInteractive) { return }
+    try {
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+        [void][System.Windows.Forms.MessageBox]::Show($text, $title,
+                 [System.Windows.Forms.MessageBoxButtons]::OK,
+                 [System.Windows.Forms.MessageBoxIcon]::Information)
     } catch {}
 }
 
@@ -448,9 +481,47 @@ Step "DONE"
 Good "Transcript: $log"
 if (-not $Execute) { Warn "This was a DRY RUN. Re-run with -Execute (add -RemoveSqlServer for a full nuke) to apply." }
 if ($Reboot -and $Execute -and -not $RemoveSqlServer) { Act "reboot now" { Stop-Transcript | Out-Null; Restart-Computer -Force } }
+
+# ---------------------------------------------------------------- 9.5 diagnostic bundle (Desktop)
+# Same idea as the installer: a Desktop .zip (the cleaner transcript(s) + a state snapshot of
+# what remains) to email back. Kept automatically if any action failed or -CollectLogs is set;
+# otherwise offered via a Yes/No dialog. Skipped on a non-interactive pass (SYSTEM reboot-resume
+# / SSH) so it never litters the SYSTEM profile's Desktop.
+try { Stop-Transcript | Out-Null } catch {}
+if ([Environment]::UserInteractive) {
+    $keep = ($script:errCount -gt 0) -or $CollectLogs
+    if (-not $keep) {
+        if ((Confirm-Gui "Cleaner finished.`n`nSave a diagnostic log bundle to the Desktop?" "EVS Cleaner") -eq $true) { $keep = $true }
+    }
+    if ($keep) {
+        try {
+            $dstamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+            $dbDir  = Join-Path ([Environment]::GetFolderPath('Desktop')) "EVS-Cleaner-Logs-$env:COMPUTERNAME-$dstamp"
+            New-Item -ItemType Directory -Force -Path $dbDir | Out-Null
+            Get-ChildItem $BackupRoot -Filter 'cleaner-*.log' -ErrorAction SilentlyContinue | Copy-Item -Destination $dbDir -ErrorAction SilentlyContinue
+            @(
+                "Computer   : $env:COMPUTERNAME"
+                "When       : $(Get-Date -Format s)"
+                "Execute    : $Execute   RemoveSqlServer: $RemoveSqlServer   PurgeDatabases: $PurgeDatabases"
+                "Action errs: $script:errCount"
+            ) | Set-Content (Join-Path $dbDir 'summary.txt')
+            Get-EvsServices | Select-Object State,Name,PathName | Format-List | Out-String | Set-Content (Join-Path $dbDir 'evs-services-remaining.txt')
+            Get-CimInstance Win32_Service -ErrorAction SilentlyContinue | Where-Object { $_.Name -match $SqlSvcRx } |
+                Select-Object State,Name | Format-List | Out-String | Set-Content (Join-Path $dbDir 'sql-services-remaining.txt')
+            Get-ItemProperty $UninstKeys -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -match ($EvsArpRx + '|' + $SqlArpRx) } |
+                Select-Object DisplayName,UninstallString | Format-List | Out-String | Set-Content (Join-Path $dbDir 'arp-remaining.txt')
+            $dzip = "$dbDir.zip"
+            if (Test-Path $dzip) { Remove-Item $dzip -Force }
+            Compress-Archive -Path (Join-Path $dbDir '*') -DestinationPath $dzip -Force
+            Remove-Item $dbDir -Recurse -Force -ErrorAction SilentlyContinue
+            Good "Diagnostic bundle: $dzip"
+            Notify-Gui "Diagnostic logs saved to:`n$dzip`n`nEmail that .zip back for triage." "EVS Cleaner - logs saved"
+        } catch { Warn "could not build diagnostic zip: $($_.Exception.Message)" }
+    }
+}
+
 if ($script:Gui -and $script:form) {
     Gui-Status 'Complete - close this window.' 100
     try { $script:pb.Value = 100; $script:btn.Enabled = $true } catch {}
     while ($script:form -and $script:form.Visible) { [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 120 }
 }
-Stop-Transcript | Out-Null

@@ -50,7 +50,8 @@ param(
     [string] $Setup,
     [switch] $Silent,
     [int]    $MaxPasses = 3,
-    [switch] $CollectLogs
+    [switch] $CollectLogs,
+    [switch] $NoGui
 )
 
 $ErrorActionPreference = 'Continue'
@@ -69,10 +70,80 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
     exit
 }
 
-function Step($m){ Write-Host "`n==> $m" -ForegroundColor Cyan }
-function Info($m){ Write-Host "    $m" }
-function Warn($m){ Write-Host "    $m" -ForegroundColor Yellow }
-function Good($m){ Write-Host "    $m" -ForegroundColor Green }
+function Step($m){ Write-Host "`n==> $m" -ForegroundColor Cyan;  Gui-Status $m; Gui-Log "==> $m" }
+function Info($m){ Write-Host "    $m";                          Gui-Log "    $m" }
+function Warn($m){ Write-Host "    $m" -ForegroundColor Yellow;  Gui-Log "    $m" }
+function Good($m){ Write-Host "    $m" -ForegroundColor Green;   Gui-Log "    $m" }
+
+# ---------------------------------------------------------------- live progress window
+# A WinForms window (status line + progress bar + live log) shows by default when a desktop
+# is present; -NoGui or a headless/SSH context falls back to console output. Same DoEvents
+# pattern as the cleaner: work runs on the UI thread and pumps messages between steps (the
+# window is inert only while the EVS setup itself is running, which has its own UI then).
+$script:Gui  = (-not $NoGui) -and [Environment]::UserInteractive
+$script:form = $null; $script:pb = $null; $script:lbl = $null; $script:logbox = $null; $script:btn = $null
+if ($script:Gui) {
+    try {
+        Add-Type -AssemblyName System.Windows.Forms
+        Add-Type -AssemblyName System.Drawing
+        $script:form = New-Object System.Windows.Forms.Form
+        $script:form.Text = 'EVS XFile3 / XSquare Installer'
+        $script:form.Size = New-Object System.Drawing.Size(780,470)
+        $script:form.StartPosition = 'CenterScreen'
+        $script:lbl = New-Object System.Windows.Forms.Label
+        $script:lbl.Location = New-Object System.Drawing.Point(12,12); $script:lbl.Size = New-Object System.Drawing.Size(744,22)
+        $script:lbl.Text = 'Starting...'
+        $script:pb = New-Object System.Windows.Forms.ProgressBar
+        $script:pb.Location = New-Object System.Drawing.Point(12,38); $script:pb.Size = New-Object System.Drawing.Size(744,24)
+        $script:pb.Minimum = 0; $script:pb.Maximum = 100; $script:pb.Value = 0
+        $script:logbox = New-Object System.Windows.Forms.TextBox
+        $script:logbox.Location = New-Object System.Drawing.Point(12,72); $script:logbox.Size = New-Object System.Drawing.Size(744,318)
+        $script:logbox.Multiline = $true; $script:logbox.ScrollBars = 'Vertical'; $script:logbox.ReadOnly = $true
+        $script:logbox.Font = New-Object System.Drawing.Font('Consolas',9)
+        $script:btn = New-Object System.Windows.Forms.Button
+        $script:btn.Location = New-Object System.Drawing.Point(656,398); $script:btn.Size = New-Object System.Drawing.Size(100,28)
+        $script:btn.Text = 'Close'; $script:btn.Enabled = $false
+        $script:btn.Add_Click({ if ($script:form) { $script:form.Close() } })
+        $script:form.Controls.AddRange(@($script:lbl,$script:pb,$script:logbox,$script:btn))
+        $script:form.Show(); $script:form.Refresh(); [System.Windows.Forms.Application]::DoEvents()
+    } catch {
+        $script:Gui = $false
+        Write-Host "GUI init failed ($($_.Exception.Message)); using console output." -ForegroundColor Yellow
+    }
+}
+function Gui-Log([string]$line) {
+    if (-not $script:Gui) { return }
+    try { $script:logbox.AppendText($line + "`r`n"); [System.Windows.Forms.Application]::DoEvents() } catch {}
+}
+function Gui-Status([string]$s, [int]$bump = 5) {
+    if (-not $script:Gui) { return }
+    try {
+        if ($s)          { $script:lbl.Text = $s }
+        if ($bump -gt 0) { $script:pb.Value = [Math]::Min(95, $script:pb.Value + $bump) }
+        [System.Windows.Forms.Application]::DoEvents()
+    } catch {}
+}
+# Yes/No dialog. Returns $true/$false when a desktop is present, $null when headless
+# (SSH / no interactive session) so the caller can apply a non-interactive default.
+function Confirm-Gui($text, $title) {
+    if (-not [Environment]::UserInteractive) { return $null }
+    try {
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+        $r = [System.Windows.Forms.MessageBox]::Show($text, $title,
+                 [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                 [System.Windows.Forms.MessageBoxIcon]::Question)
+        return ($r -eq [System.Windows.Forms.DialogResult]::Yes)
+    } catch { return $null }
+}
+function Notify-Gui($text, $title) {
+    if (-not [Environment]::UserInteractive) { return }
+    try {
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+        [void][System.Windows.Forms.MessageBox]::Show($text, $title,
+                 [System.Windows.Forms.MessageBoxButtons]::OK,
+                 [System.Windows.Forms.MessageBoxIcon]::Information)
+    } catch {}
+}
 
 # ---------------------------------------------------------------- locate setup
 if (-not $Setup) {
@@ -81,7 +152,20 @@ if (-not $Setup) {
     $cands += Get-ChildItem 'R:\XF3_Restore\Software Versions' -Filter 'XFile3_v*_Win10_setup.exe' -ErrorAction SilentlyContinue
     $Setup = ($cands | Where-Object { $_.FullName -notmatch '__MACOSX' } | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
 }
-if (-not $Setup -or -not (Test-Path $Setup)) { Warn "XFile3 setup exe not found. Pass -Setup <path>."; exit 1 }
+if ((-not $Setup -or -not (Test-Path $Setup)) -and $script:Gui) {
+    # let the operator browse to it instead of failing
+    try {
+        $ofd = New-Object System.Windows.Forms.OpenFileDialog
+        $ofd.Title  = 'Select the XFile3 setup .exe'
+        $ofd.Filter = 'XFile3 setup (*.exe)|*.exe|All files (*.*)|*.*'
+        if ($ofd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $Setup = $ofd.FileName }
+    } catch {}
+}
+if (-not $Setup -or -not (Test-Path $Setup)) {
+    Warn "XFile3 setup exe not found. Pass -Setup <path> or pick it when prompted."
+    if ($script:Gui) { Notify-Gui "No XFile3 setup .exe selected - nothing to install." "EVS Installer" }
+    exit 1
+}
 Step "Using setup: $Setup"
 
 # ---------------------------------------------------------------- the fix
@@ -249,28 +333,6 @@ function Collect-DiagBundle($dir, $setupExit, $err) {
     } catch {}
 }
 
-# Yes/No dialog. Returns $true/$false when a desktop is present, $null when headless
-# (SSH / no interactive session) so the caller can apply a non-interactive default.
-function Confirm-Gui($text, $title) {
-    if (-not [Environment]::UserInteractive) { return $null }
-    try {
-        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
-        $r = [System.Windows.Forms.MessageBox]::Show($text, $title,
-                 [System.Windows.Forms.MessageBoxButtons]::YesNo,
-                 [System.Windows.Forms.MessageBoxIcon]::Question)
-        return ($r -eq [System.Windows.Forms.DialogResult]::Yes)
-    } catch { return $null }
-}
-function Notify-Gui($text, $title) {
-    if (-not [Environment]::UserInteractive) { return }
-    try {
-        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
-        [void][System.Windows.Forms.MessageBox]::Show($text, $title,
-                 [System.Windows.Forms.MessageBoxButtons]::OK,
-                 [System.Windows.Forms.MessageBoxIcon]::Information)
-    } catch {}
-}
-
 # ---------------------------------------------------------------- drive the install
 $setupArgs = @()
 if ($Silent) { $setupArgs = @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART') }
@@ -351,4 +413,14 @@ finally {
     } else {
         Remove-Item $bundleDir -Recurse -Force -ErrorAction SilentlyContinue   # success + declined: no litter
     }
+}
+
+# ---------------------------------------------------------------- keep the window up
+if ($script:Gui -and $script:form) {
+    $final = if ($result -eq 'installed') { 'Done - XSquare installed. Close this window.' }
+             else { "Finished (result=$result). Review the log, then close this window." }
+    Gui-Status $final 0
+    try { $script:pb.Value = 100 } catch {}
+    try { $script:btn.Enabled = $true } catch {}
+    while ($script:form -and $script:form.Visible) { [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 120 }
 }

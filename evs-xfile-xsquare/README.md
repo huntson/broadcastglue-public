@@ -78,9 +78,14 @@ value; pass 2 completes.
 
 | Parameter | Default | Meaning |
 |---|---|---|
-| `-Setup <path>` | auto-detect | Path to the XFile3 setup exe. |
+| `-Setup <path>` | auto-detect | Path to the XFile3 setup exe. If missing, the GUI shows a file picker. |
 | `-Silent` | off | Run the setup `/VERYSILENT`. The suite is most reliable run interactively. |
 | `-MaxPasses <n>` | 3 | Max setup passes (pass 1 installs SQL, pass 2 completes). |
+| `-NoGui` | off | Force console-only output (the GUI is on by default when a desktop is present). |
+
+By default it shows a live progress window — status line, progress bar, and a scrolling log —
+so the operator sees each step as it happens; over SSH or with `-NoGui` it falls back to
+console output.
 
 ### SQL-version-agnostic
 

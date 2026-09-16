@@ -98,15 +98,15 @@ It never fabricates a key for a SQL that isn't installed.
 
 ### Diagnostics & log collection
 
-If an install misbehaves in the field, `-CollectLogs` captures a triage bundle as a `.zip`
-on the Desktop: a full transcript, exactly what our SQL detection returned, the ARP
+Logs are always captured under a transcript while the installer runs. A triage bundle (`.zip`
+on the Desktop) holds the transcript, exactly what our SQL detection returned, the ARP
 `UninstallString` values, the EVS + SQL setup logs, SQL event-log entries, environment, and
-any wrapper exception + stack (the run is wrapped in a trap so a crash is captured, not
-swallowed). The script transmits nothing — the operator emails the `.zip` back for triage.
+any wrapper exception + stack (a crash is trapped and captured, not swallowed). No CLI flag
+is needed and nothing is transmitted — you email the `.zip` back for triage. The bundle is:
 
-```powershell
-.\Install-EVS-Xsquare-Unit.ps1 -CollectLogs   # install + a diagnostic .zip on the Desktop to email back
-```
+- **saved automatically** whenever the install fails;
+- **offered via a Yes/No dialog** on a successful run (decline = the staging folder is removed);
+- **forced** (no prompt) with `-CollectLogs`, for unattended/automation runs.
 
 ---
 

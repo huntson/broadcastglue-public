@@ -30,19 +30,20 @@
     Maximum setup passes (default 3). Pass 1 installs SQL, pass 2 completes after the fix.
 
 .PARAMETER CollectLogs
-    Capture a diagnostic bundle (transcript, our SQL detection result, the ARP
-    UninstallString values before/after, the EVS + SQL setup logs, SQL event-log entries,
-    environment, and any exception + stack) into a timestamped folder and .zip on the
-    Desktop. Produced on success OR failure. The run is wrapped in a trap so a crash in this
-    wrapper is captured, not swallowed. The .zip is left on the Desktop for the operator to
-    email back for triage — nothing is transmitted by the script.
+    Optional. Logs are ALWAYS captured under a transcript and a diagnostic bundle
+    (transcript, our SQL detection result, the ARP UninstallString values, the EVS + SQL
+    setup logs, SQL event-log entries, environment, and any exception + stack) is saved as a
+    .zip on the Desktop AUTOMATICALLY whenever the install fails. On a SUCCESSFUL run the
+    operator is asked with a Yes/No dialog whether to keep the bundle (declined = the staging
+    folder is removed, no clutter). This switch just forces "always keep, no prompt" — useful
+    for unattended/automation runs. Nothing is transmitted; the .zip is emailed back manually.
 
 .EXAMPLE
-    .\Install-EVS-Xsquare-Unit.ps1
+    .\Install-EVS-Xsquare-Unit.ps1                 # on failure: auto-saves a .zip; on success: asks
 .EXAMPLE
     .\Install-EVS-Xsquare-Unit.ps1 -Setup "R:\XF3_Restore\Software Versions\XFile3_v5.4.0.7664_Win10_setup.exe"
 .EXAMPLE
-    .\Install-EVS-Xsquare-Unit.ps1 -CollectLogs   # same install, plus a diagnostic .zip on the Desktop to email back
+    .\Install-EVS-Xsquare-Unit.ps1 -CollectLogs   # always keep the diagnostic .zip, no prompt (automation)
 #>
 [CmdletBinding()]
 param(
@@ -248,17 +249,40 @@ function Collect-DiagBundle($dir, $setupExit, $err) {
     } catch {}
 }
 
+# Yes/No dialog. Returns $true/$false when a desktop is present, $null when headless
+# (SSH / no interactive session) so the caller can apply a non-interactive default.
+function Confirm-Gui($text, $title) {
+    if (-not [Environment]::UserInteractive) { return $null }
+    try {
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+        $r = [System.Windows.Forms.MessageBox]::Show($text, $title,
+                 [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                 [System.Windows.Forms.MessageBoxIcon]::Question)
+        return ($r -eq [System.Windows.Forms.DialogResult]::Yes)
+    } catch { return $null }
+}
+function Notify-Gui($text, $title) {
+    if (-not [Environment]::UserInteractive) { return }
+    try {
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+        [void][System.Windows.Forms.MessageBox]::Show($text, $title,
+                 [System.Windows.Forms.MessageBoxButtons]::OK,
+                 [System.Windows.Forms.MessageBoxIcon]::Information)
+    } catch {}
+}
+
 # ---------------------------------------------------------------- drive the install
 $setupArgs = @()
 if ($Silent) { $setupArgs = @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART') }
 
-$bundleDir = $null
-if ($CollectLogs) {
-    $stamp     = Get-Date -Format 'yyyyMMdd-HHmmss'
-    $bundleDir = Join-Path ([Environment]::GetFolderPath('Desktop')) "EVS-Install-Logs-$env:COMPUTERNAME-$stamp"
-    New-Item -ItemType Directory -Path $bundleDir -Force | Out-Null
-    try { Start-Transcript -Path (Join-Path $bundleDir 'transcript.txt') -Force | Out-Null } catch {}
-}
+# Always run under a transcript into a staging folder on the Desktop. Whether we keep it
+# is decided at the end (kept automatically on failure, or by a Yes/No dialog on success);
+# on a success the operator declines, the staging folder is deleted so nothing is littered.
+$stamp        = Get-Date -Format 'yyyyMMdd-HHmmss'
+$bundleDir    = Join-Path ([Environment]::GetFolderPath('Desktop')) "EVS-Install-Logs-$env:COMPUTERNAME-$stamp"
+New-Item -ItemType Directory -Path $bundleDir -Force | Out-Null
+$transcribing = $false
+try { Start-Transcript -Path (Join-Path $bundleDir 'transcript.txt') -Force | Out-Null; $transcribing = $true } catch {}
 
 $setupExit = $null
 $runError  = $null
@@ -298,21 +322,33 @@ catch {
     Warn "Wrapper error: $($_.Exception.Message)"
 }
 finally {
-    if ($CollectLogs) {
+    if ($transcribing) { try { Stop-Transcript | Out-Null } catch {} }
+
+    $failed = ($result -ne 'installed')
+    # Keep the logs automatically on failure; on success keep only if the operator says yes
+    # to the dialog (or -CollectLogs forces it for automation). Never needs a CLI flag.
+    $keep = $failed -or $CollectLogs
+    if (-not $keep) {
+        if ((Confirm-Gui "Install completed successfully.`n`nSave a diagnostic log bundle to the Desktop anyway?" "EVS Installer") -eq $true) { $keep = $true }
+    }
+
+    if ($keep) {
         Step "Collecting diagnostic bundle"
         try { Collect-DiagBundle $bundleDir $setupExit $runError } catch { Warn "bundle collection issue: $($_.Exception.Message)" }
-        try { Stop-Transcript | Out-Null } catch {}
         $zip = "$bundleDir.zip"
         try {
             if (Test-Path $zip) { Remove-Item $zip -Force }
             Compress-Archive -Path (Join-Path $bundleDir '*') -DestinationPath $zip -Force
+            Remove-Item $bundleDir -Recurse -Force -ErrorAction SilentlyContinue
             Good "Diagnostic bundle: $zip"
-        } catch { Warn "could not zip bundle: $($_.Exception.Message)"; $zip = $null }
-
-        if ($zip) {
-            Good "Diagnostic bundle ready on the Desktop:"
-            Good "  $zip"
-            Info "Email that .zip back for triage (result=$result)."
-        }
+            $msg = if ($failed) {
+                "Install did not complete (result=$result).`n`nDiagnostic logs saved to:`n$zip`n`nPlease email that .zip back for triage."
+            } else {
+                "Diagnostic logs saved to:`n$zip`n`nEmail that .zip back for triage."
+            }
+            Notify-Gui $msg "EVS Installer - logs saved"
+        } catch { Warn "could not zip bundle: $($_.Exception.Message)  (folder kept: $bundleDir)" }
+    } else {
+        Remove-Item $bundleDir -Recurse -Force -ErrorAction SilentlyContinue   # success + declined: no litter
     }
 }

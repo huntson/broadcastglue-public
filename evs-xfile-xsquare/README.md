@@ -96,6 +96,18 @@ instance (`MSSQL13/14/15/16.*`) and derives the release year, folder number
 
 It never fabricates a key for a SQL that isn't installed.
 
+### Diagnostics & log collection
+
+If an install misbehaves in the field, `-CollectLogs` captures a triage bundle as a `.zip`
+on the Desktop: a full transcript, exactly what our SQL detection returned, the ARP
+`UninstallString` values, the EVS + SQL setup logs, SQL event-log entries, environment, and
+any wrapper exception + stack (the run is wrapped in a trap so a crash is captured, not
+swallowed). The script transmits nothing — the operator emails the `.zip` back for triage.
+
+```powershell
+.\Install-EVS-Xsquare-Unit.ps1 -CollectLogs   # install + a diagnostic .zip on the Desktop to email back
+```
+
 ---
 
 ## `Clean-EVS-Xsquare-Unit.ps1`

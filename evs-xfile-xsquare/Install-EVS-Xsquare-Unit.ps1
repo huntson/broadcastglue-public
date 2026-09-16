@@ -29,16 +29,27 @@
 .PARAMETER MaxPasses
     Maximum setup passes (default 3). Pass 1 installs SQL, pass 2 completes after the fix.
 
+.PARAMETER CollectLogs
+    Capture a diagnostic bundle (transcript, our SQL detection result, the ARP
+    UninstallString values before/after, the EVS + SQL setup logs, SQL event-log entries,
+    environment, and any exception + stack) into a timestamped folder and .zip on the
+    Desktop. Produced on success OR failure. The run is wrapped in a trap so a crash in this
+    wrapper is captured, not swallowed. The .zip is left on the Desktop for the operator to
+    email back for triage — nothing is transmitted by the script.
+
 .EXAMPLE
     .\Install-EVS-Xsquare-Unit.ps1
 .EXAMPLE
     .\Install-EVS-Xsquare-Unit.ps1 -Setup "R:\XF3_Restore\Software Versions\XFile3_v5.4.0.7664_Win10_setup.exe"
+.EXAMPLE
+    .\Install-EVS-Xsquare-Unit.ps1 -CollectLogs   # same install, plus a diagnostic .zip on the Desktop to email back
 #>
 [CmdletBinding()]
 param(
     [string] $Setup,
     [switch] $Silent,
-    [int]    $MaxPasses = 3
+    [int]    $MaxPasses = 3,
+    [switch] $CollectLogs
 )
 
 $ErrorActionPreference = 'Continue'
@@ -178,31 +189,130 @@ function Is-XsquareInstalled {
            Where-Object { $_.Name -match 'Xsquare' -or $_.DisplayName -match 'EVS Xsquare Service' })
 }
 
-# ---------------------------------------------------------------- drive the install
-$args = @()
-if ($Silent) { $args = @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART') }
+# ---------------------------------------------------------------- diagnostics
+# Gather everything needed to triage a failure of EITHER the EVS installer or this
+# wrapper: environment, what our SQL detection returned, the ARP UninstallString values
+# (so a bad detection / failed write is visible), the EVS + SQL setup logs, SQL event-log
+# entries, and any wrapper exception + stack. Written into $dir; the caller zips it.
+function Collect-DiagBundle($dir, $setupExit, $err) {
+    if (-not $dir) { return }
+    $os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
+    @(
+        "Computer   : $env:COMPUTERNAME"
+        "User       : $env:USERNAME"
+        "When       : $(Get-Date -Format s)"
+        "OS         : $($os.Caption) build $($os.BuildNumber)"
+        "PowerShell : $($PSVersionTable.PSVersion)"
+        "ExecPolicy : $(Get-ExecutionPolicy)"
+        "Setup exe  : $Setup"
+        "Setup exit : $setupExit"
+    ) | Set-Content (Join-Path $dir 'environment.txt')
 
-for ($pass = 1; $pass -le $MaxPasses; $pass++) {
-    Step "Pass $pass/$MaxPasses"
+    # what our own detection produced (a misdetection shows up here)
+    $sql = Get-InstalledSqlInfo
+    if ($sql) { ($sql.GetEnumerator() | ForEach-Object { '{0,-9}: {1}' -f $_.Key, $_.Value }) | Set-Content (Join-Path $dir 'sql-detection.txt') }
+    else { 'Get-InstalledSqlInfo returned NULL (no SQL instance detected)' | Set-Content (Join-Path $dir 'sql-detection.txt') }
 
-    # apply the fix up-front each pass (no-op until SQL is present)
-    if (Repair-SqlArpUninstallString) { Good "SQL ARP gate value repaired before this pass." }
-    else { Info "SQL not present yet / ARP value already valid — nothing to repair." }
-
-    Step "Launching XFile3 setup (waiting for it to finish)"
-    Start-Process -FilePath $Setup -ArgumentList $args -Wait
-
-    if (Is-XsquareInstalled) { Good "XSquare suite is installed (services present) — DONE."; break }
-
-    if ($pass -lt $MaxPasses) {
-        Warn "Suite not installed after pass $pass (expected on pass 1 — it installs SQL then aborts at the gate). Re-running with the ARP fix applied."
-    } else {
-        Warn "Reached max passes without the XSquare service appearing."
-        Warn "Check C:\EVSLogs\Xsquare\Install\XSquareInstall.log for the last [IsAppInstalled] result."
+    # the exact values the installer's gate reads — before/after our write is visible here
+    $hives = @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
+               'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall')
+    $arp = foreach ($h in $hives) {
+        Get-ChildItem $h -ErrorAction SilentlyContinue | ForEach-Object {
+            $pp = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue
+            if ($_.PSChildName -match 'SQL' -or $pp.DisplayName -match 'SQL Server') {
+                [pscustomobject]@{
+                    Hive            = if ($h -match 'WOW6432Node') { 'WOW6432' } else { '64-bit' }
+                    Key             = $_.PSChildName
+                    DisplayName     = $pp.DisplayName
+                    UninstallString = $pp.UninstallString
+                }
+            }
+        }
     }
+    $arp | Format-List | Out-String | Set-Content (Join-Path $dir 'arp-uninstallstrings.txt')
+
+    if ($err) { (($err | Out-String) + "`n--- stack ---`n" + $err.ScriptStackTrace) | Set-Content (Join-Path $dir 'error.txt') }
+
+    $evslog = 'C:\EVSLogs\Xsquare\Install\XSquareInstall.log'
+    if (Test-Path $evslog) { Copy-Item $evslog $dir -ErrorAction SilentlyContinue }
+
+    Get-ChildItem 'C:\Program Files\Microsoft SQL Server\*\Setup Bootstrap\Log\Summary.txt' -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 3 | ForEach-Object {
+            Copy-Item $_.FullName (Join-Path $dir "SQLSummary-$($_.Directory.Parent.Parent.Name).txt") -ErrorAction SilentlyContinue
+        }
+
+    try {
+        Get-WinEvent -FilterHashtable @{ LogName='Application'; ProviderName='MSSQLSERVER' } -MaxEvents 100 -ErrorAction SilentlyContinue |
+            Select-Object TimeCreated, Id, LevelDisplayName, Message | Format-List | Out-String |
+            Set-Content (Join-Path $dir 'sql-eventlog.txt')
+    } catch {}
 }
 
-Step "Final state"
-Get-CimInstance Win32_Service -ErrorAction SilentlyContinue |
-    Where-Object { $_.PathName -match 'EVS Broadcast Equipment' -or $_.Name -match 'Xsquare|NotificationService|XTGateway' } |
-    Select-Object State,Name | Format-Table -Auto | Out-String | Write-Host
+# ---------------------------------------------------------------- drive the install
+$setupArgs = @()
+if ($Silent) { $setupArgs = @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART') }
+
+$bundleDir = $null
+if ($CollectLogs) {
+    $stamp     = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $bundleDir = Join-Path ([Environment]::GetFolderPath('Desktop')) "EVS-Install-Logs-$env:COMPUTERNAME-$stamp"
+    New-Item -ItemType Directory -Path $bundleDir -Force | Out-Null
+    try { Start-Transcript -Path (Join-Path $bundleDir 'transcript.txt') -Force | Out-Null } catch {}
+}
+
+$setupExit = $null
+$runError  = $null
+$result    = 'unknown'
+try {
+    for ($pass = 1; $pass -le $MaxPasses; $pass++) {
+        Step "Pass $pass/$MaxPasses"
+
+        # apply the fix up-front each pass (no-op until SQL is present)
+        if (Repair-SqlArpUninstallString) { Good "SQL ARP gate value repaired before this pass." }
+        else { Info "SQL not present yet / ARP value already valid — nothing to repair." }
+
+        Step "Launching XFile3 setup (waiting for it to finish)"
+        $proc = Start-Process -FilePath $Setup -ArgumentList $setupArgs -Wait -PassThru
+        $setupExit = $proc.ExitCode
+        Info "setup exit code: $setupExit"
+
+        if (Is-XsquareInstalled) { Good "XSquare suite is installed (services present) — DONE."; $result = 'installed'; break }
+
+        if ($pass -lt $MaxPasses) {
+            Warn "Suite not installed after pass $pass (expected on pass 1 — it installs SQL then aborts at the gate). Re-running with the ARP fix applied."
+        } else {
+            $result = 'failed'
+            Warn "Reached max passes without the XSquare service appearing."
+            Warn "Check C:\EVSLogs\Xsquare\Install\XSquareInstall.log for the last [IsAppInstalled] result."
+        }
+    }
+
+    Step "Final state"
+    Get-CimInstance Win32_Service -ErrorAction SilentlyContinue |
+        Where-Object { $_.PathName -match 'EVS Broadcast Equipment' -or $_.Name -match 'Xsquare|NotificationService|XTGateway' } |
+        Select-Object State,Name | Format-Table -Auto | Out-String | Write-Host
+}
+catch {
+    $runError = $_
+    $result   = 'error'
+    Warn "Wrapper error: $($_.Exception.Message)"
+}
+finally {
+    if ($CollectLogs) {
+        Step "Collecting diagnostic bundle"
+        try { Collect-DiagBundle $bundleDir $setupExit $runError } catch { Warn "bundle collection issue: $($_.Exception.Message)" }
+        try { Stop-Transcript | Out-Null } catch {}
+        $zip = "$bundleDir.zip"
+        try {
+            if (Test-Path $zip) { Remove-Item $zip -Force }
+            Compress-Archive -Path (Join-Path $bundleDir '*') -DestinationPath $zip -Force
+            Good "Diagnostic bundle: $zip"
+        } catch { Warn "could not zip bundle: $($_.Exception.Message)"; $zip = $null }
+
+        if ($zip) {
+            Good "Diagnostic bundle ready on the Desktop:"
+            Good "  $zip"
+            Info "Email that .zip back for triage (result=$result)."
+        }
+    }
+}

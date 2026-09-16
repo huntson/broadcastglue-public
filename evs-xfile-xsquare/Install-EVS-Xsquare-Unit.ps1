@@ -75,10 +75,10 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
     exit
 }
 
-function Step($m){ Write-Host "`n==> $m" -ForegroundColor Cyan;  Gui-Status $m; Gui-Log "==> $m" }
-function Info($m){ Write-Host "    $m";                          Gui-Log "    $m" }
-function Warn($m){ Write-Host "    $m" -ForegroundColor Yellow;  Gui-Log "    $m" }
-function Good($m){ Write-Host "    $m" -ForegroundColor Green;   Gui-Log "    $m" }
+function Step($m){ Write-Host "`n==> $m" -ForegroundColor Cyan;  Update-GuiStatus $m; Write-GuiLog "==> $m" }
+function Info($m){ Write-Host "    $m";                          Write-GuiLog "    $m" }
+function Warn($m){ Write-Host "    $m" -ForegroundColor Yellow;  Write-GuiLog "    $m" }
+function Good($m){ Write-Host "    $m" -ForegroundColor Green;   Write-GuiLog "    $m" }
 
 # ---------------------------------------------------------------- live progress window
 # A WinForms window (status line + progress bar + live log) shows by default when a desktop
@@ -116,17 +116,17 @@ if ($script:Gui) {
         Write-Host "GUI init failed ($($_.Exception.Message)); using console output." -ForegroundColor Yellow
     }
 }
-function Gui-Log([string]$line) {
+function Write-GuiLog([string]$line) {
     if (-not $script:Gui) { return }
-    try { $script:logbox.AppendText($line + "`r`n"); [System.Windows.Forms.Application]::DoEvents() } catch {}
+    try { $script:logbox.AppendText($line + "`r`n"); [System.Windows.Forms.Application]::DoEvents() } catch { $null = $_ }
 }
-function Gui-Status([string]$s, [int]$bump = 5) {
+function Update-GuiStatus([string]$s, [int]$bump = 5) {
     if (-not $script:Gui) { return }
     try {
         if ($s)          { $script:lbl.Text = $s }
         if ($bump -gt 0) { $script:pb.Value = [Math]::Min(95, $script:pb.Value + $bump) }
         [System.Windows.Forms.Application]::DoEvents()
-    } catch {}
+    } catch { $null = $_ }
 }
 # Yes/No dialog. Returns $true/$false when a desktop is present, $null when headless
 # (SSH / no interactive session) so the caller can apply a non-interactive default.
@@ -140,14 +140,14 @@ function Confirm-Gui($text, $title) {
         return ($r -eq [System.Windows.Forms.DialogResult]::Yes)
     } catch { return $null }
 }
-function Notify-Gui($text, $title) {
+function Show-GuiNote($text, $title) {
     if (-not [Environment]::UserInteractive) { return }
     try {
         Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
         [void][System.Windows.Forms.MessageBox]::Show($text, $title,
                  [System.Windows.Forms.MessageBoxButtons]::OK,
                  [System.Windows.Forms.MessageBoxIcon]::Information)
-    } catch {}
+    } catch { $null = $_ }
 }
 
 # ---------------------------------------------------------------- locate setup
@@ -164,11 +164,11 @@ if ((-not $Setup -or -not (Test-Path $Setup)) -and $script:Gui) {
         $ofd.Title  = 'Select the XFile3 setup .exe'
         $ofd.Filter = 'XFile3 setup (*.exe)|*.exe|All files (*.*)|*.*'
         if ($ofd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $Setup = $ofd.FileName }
-    } catch {}
+    } catch { $null = $_ }
 }
 if (-not $Setup -or -not (Test-Path $Setup)) {
     Warn "XFile3 setup exe not found. Pass -Setup <path> or pick it when prompted."
-    if ($script:Gui) { Notify-Gui "No XFile3 setup .exe selected - nothing to install." "EVS Installer" }
+    if ($script:Gui) { Show-GuiNote "No XFile3 setup .exe selected - nothing to install." "EVS Installer" }
     exit 1
 }
 Step "Using setup: $Setup"
@@ -257,7 +257,7 @@ function Repair-SqlArpUninstallString {
             if ($leaf -match 'SQL Server .*20\d\d|Shared Management Objects' -or
                 $dn   -match 'SQL Server .*20\d\d|Shared Management Objects') {
                 $nm = if ($dn) { $dn } else { "Microsoft $leaf" }
-                if (Set-EmptyArp $item.PSPath $nm $sql.Version $sql.ArpExe) { $fixed = $true }
+                if (Set-EmptyArp -key $item.PSPath -name $nm -ver $sql.Version -exe $sql.ArpExe) { $fixed = $true }
             }
         }
     }
@@ -271,13 +271,13 @@ function Repair-SqlArpUninstallString {
         foreach ($h in $hives) {
             $k = Join-Path $h $leafYear
             if (-not (Test-Path $k)) { New-Item -Path $k -Force | Out-Null }
-            if (Set-EmptyArp $k "Microsoft SQL Server $($sql.Year) (64-bit)" $sql.Version $sql.ArpExe) { $fixed = $true }
+            if (Set-EmptyArp -key $k -name "Microsoft SQL Server $($sql.Year) (64-bit)" -ver $sql.Version -exe $sql.ArpExe) { $fixed = $true }
         }
     }
     return $fixed
 }
 
-function Is-XsquareInstalled {
+function Test-XsquareInstalled {
     [bool](Get-CimInstance Win32_Service -ErrorAction SilentlyContinue |
            Where-Object { $_.Name -match 'Xsquare' -or $_.DisplayName -match 'EVS Xsquare Service' })
 }
@@ -287,7 +287,7 @@ function Is-XsquareInstalled {
 # wrapper: environment, what our SQL detection returned, the ARP UninstallString values
 # (so a bad detection / failed write is visible), the EVS + SQL setup logs, SQL event-log
 # entries, and any wrapper exception + stack. Written into $dir; the caller zips it.
-function Collect-DiagBundle($dir, $setupExit, $err) {
+function Export-DiagBundle($dir, $setupExit, $err) {
     if (-not $dir) { return }
     $os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
     @(
@@ -338,7 +338,7 @@ function Collect-DiagBundle($dir, $setupExit, $err) {
         Get-WinEvent -FilterHashtable @{ LogName='Application'; ProviderName='MSSQLSERVER' } -MaxEvents 100 -ErrorAction SilentlyContinue |
             Select-Object TimeCreated, Id, LevelDisplayName, Message | Format-List | Out-String |
             Set-Content (Join-Path $dir 'sql-eventlog.txt')
-    } catch {}
+    } catch { $null = $_ }
 }
 
 # ---------------------------------------------------------------- drive the install
@@ -352,7 +352,7 @@ $stamp        = Get-Date -Format 'yyyyMMdd-HHmmss'
 $bundleDir    = Join-Path ([Environment]::GetFolderPath('Desktop')) "EVS-Install-Logs-$env:COMPUTERNAME-$stamp"
 New-Item -ItemType Directory -Path $bundleDir -Force | Out-Null
 $transcribing = $false
-try { Start-Transcript -Path (Join-Path $bundleDir 'transcript.txt') -Force | Out-Null; $transcribing = $true } catch {}
+try { Start-Transcript -Path (Join-Path $bundleDir 'transcript.txt') -Force | Out-Null; $transcribing = $true } catch { $null = $_ }
 
 $setupExit = $null
 $runError  = $null
@@ -370,7 +370,7 @@ try {
         $setupExit = $proc.ExitCode
         Info "setup exit code: $setupExit"
 
-        if (Is-XsquareInstalled) { Good "XSquare suite is installed (services present) - DONE."; $result = 'installed'; break }
+        if (Test-XsquareInstalled) { Good "XSquare suite is installed (services present) - DONE."; $result = 'installed'; break }
 
         if ($pass -lt $MaxPasses) {
             Warn "Suite not installed after pass $pass (expected on pass 1 - it installs SQL then aborts at the gate). Re-running with the ARP fix applied."
@@ -392,7 +392,7 @@ catch {
     Warn "Wrapper error: $($_.Exception.Message)"
 }
 finally {
-    if ($transcribing) { try { Stop-Transcript | Out-Null } catch {} }
+    if ($transcribing) { try { Stop-Transcript | Out-Null } catch { $null = $_ } }
 
     $failed = ($result -ne 'installed')
     # Keep the logs automatically on failure; on success keep only if the operator says yes
@@ -404,7 +404,7 @@ finally {
 
     if ($keep) {
         Step "Collecting diagnostic bundle"
-        try { Collect-DiagBundle $bundleDir $setupExit $runError } catch { Warn "bundle collection issue: $($_.Exception.Message)" }
+        try { Export-DiagBundle -dir $bundleDir -setupExit $setupExit -err $runError } catch { Warn "bundle collection issue: $($_.Exception.Message)" }
         $zip = "$bundleDir.zip"
         try {
             if (Test-Path $zip) { Remove-Item $zip -Force }
@@ -416,7 +416,7 @@ finally {
             } else {
                 "Diagnostic logs saved to:`n$zip`n`nEmail that .zip back for triage."
             }
-            Notify-Gui $msg "EVS Installer - logs saved"
+            Show-GuiNote $msg "EVS Installer - logs saved"
         } catch { Warn "could not zip bundle: $($_.Exception.Message)  (folder kept: $bundleDir)" }
     } else {
         Remove-Item $bundleDir -Recurse -Force -ErrorAction SilentlyContinue   # success + declined: no litter
@@ -427,8 +427,8 @@ finally {
 if ($script:Gui -and $script:form) {
     $final = if ($result -eq 'installed') { 'Done - XSquare installed. Close this window.' }
              else { "Finished (result=$result). Review the log, then close this window." }
-    Gui-Status $final 0
-    try { $script:pb.Value = 100 } catch {}
-    try { $script:btn.Enabled = $true } catch {}
+    Update-GuiStatus $final 0
+    try { $script:pb.Value = 100 } catch { $null = $_ }
+    try { $script:btn.Enabled = $true } catch { $null = $_ }
     while ($script:form -and $script:form.Visible) { [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 120 }
 }

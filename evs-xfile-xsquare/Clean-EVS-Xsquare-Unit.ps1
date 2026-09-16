@@ -101,10 +101,10 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 }
 
 # ---------------------------------------------------------------- helpers
-function Step($m){ Write-Host "`n==> $m" -ForegroundColor Cyan; Gui-Status $m 10; Gui-Log "==> $m" }
-function Info($m){ Write-Host "    $m"; Gui-Log "    $m" }
-function Warn($m){ Write-Host "    $m" -ForegroundColor Yellow; Gui-Log "    $m" }
-function Good($m){ Write-Host "    $m" -ForegroundColor Green; Gui-Log "    $m" }
+function Step($m){ Write-Host "`n==> $m" -ForegroundColor Cyan; Update-GuiStatus $m 10; Write-GuiLog "==> $m" }
+function Info($m){ Write-Host "    $m"; Write-GuiLog "    $m" }
+function Warn($m){ Write-Host "    $m" -ForegroundColor Yellow; Write-GuiLog "    $m" }
+function Good($m){ Write-Host "    $m" -ForegroundColor Green; Write-GuiLog "    $m" }
 
 # Every state-changing action funnels through here: dry run just prints the plan.
 function Act([string]$desc, [scriptblock]$do){
@@ -189,17 +189,17 @@ if ($script:Gui) {
         Write-Host "GUI init failed ($($_.Exception.Message)); using console output." -ForegroundColor Yellow
     }
 }
-function Gui-Log([string]$line) {
+function Write-GuiLog([string]$line) {
     if (-not $script:Gui) { return }
-    try { $script:logbox.AppendText($line + "`r`n"); [System.Windows.Forms.Application]::DoEvents() } catch {}
+    try { $script:logbox.AppendText($line + "`r`n"); [System.Windows.Forms.Application]::DoEvents() } catch { $null = $_ }
 }
-function Gui-Status([string]$s, [int]$bump = 0) {
+function Update-GuiStatus([string]$s, [int]$bump = 0) {
     if (-not $script:Gui) { return }
     try {
         if ($s)          { $script:lbl.Text = $s }
         if ($bump -gt 0) { $script:pb.Value = [Math]::Min(100, $script:pb.Value + $bump) }
         [System.Windows.Forms.Application]::DoEvents()
-    } catch {}
+    } catch { $null = $_ }
 }
 # Yes/No dialog: $true/$false interactively, $null when headless (SYSTEM resume / SSH).
 function Confirm-Gui($text, $title) {
@@ -212,14 +212,14 @@ function Confirm-Gui($text, $title) {
         return ($r -eq [System.Windows.Forms.DialogResult]::Yes)
     } catch { return $null }
 }
-function Notify-Gui($text, $title) {
+function Show-GuiNote($text, $title) {
     if (-not [Environment]::UserInteractive) { return }
     try {
         Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
         [void][System.Windows.Forms.MessageBox]::Show($text, $title,
                  [System.Windows.Forms.MessageBoxButtons]::OK,
                  [System.Windows.Forms.MessageBoxIcon]::Information)
-    } catch {}
+    } catch { $null = $_ }
 }
 
 # ---------------------------------------------------------------- 0. inventory
@@ -487,7 +487,7 @@ if ($Reboot -and $Execute -and -not $RemoveSqlServer) { Act "reboot now" { Stop-
 # what remains) to email back. Kept automatically if any action failed or -CollectLogs is set;
 # otherwise offered via a Yes/No dialog. Skipped on a non-interactive pass (SYSTEM reboot-resume
 # / SSH) so it never litters the SYSTEM profile's Desktop.
-try { Stop-Transcript | Out-Null } catch {}
+try { Stop-Transcript | Out-Null } catch { $null = $_ }
 if ([Environment]::UserInteractive) {
     $keep = ($script:errCount -gt 0) -or $CollectLogs
     if (-not $keep) {
@@ -515,13 +515,13 @@ if ([Environment]::UserInteractive) {
             Compress-Archive -Path (Join-Path $dbDir '*') -DestinationPath $dzip -Force
             Remove-Item $dbDir -Recurse -Force -ErrorAction SilentlyContinue
             Good "Diagnostic bundle: $dzip"
-            Notify-Gui "Diagnostic logs saved to:`n$dzip`n`nEmail that .zip back for triage." "EVS Cleaner - logs saved"
+            Show-GuiNote "Diagnostic logs saved to:`n$dzip`n`nEmail that .zip back for triage." "EVS Cleaner - logs saved"
         } catch { Warn "could not build diagnostic zip: $($_.Exception.Message)" }
     }
 }
 
 if ($script:Gui -and $script:form) {
-    Gui-Status 'Complete - close this window.' 100
-    try { $script:pb.Value = 100; $script:btn.Enabled = $true } catch {}
+    Update-GuiStatus 'Complete - close this window.' 100
+    try { $script:pb.Value = 100; $script:btn.Enabled = $true } catch { $null = $_ }
     while ($script:form -and $script:form.Visible) { [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 120 }
 }

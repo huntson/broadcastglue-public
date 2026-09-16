@@ -35,8 +35,13 @@
     setup logs, SQL event-log entries, environment, and any exception + stack) is saved as a
     .zip on the Desktop AUTOMATICALLY whenever the install fails. On a SUCCESSFUL run the
     operator is asked with a Yes/No dialog whether to keep the bundle (declined = the staging
-    folder is removed, no clutter). This switch just forces "always keep, no prompt" — useful
+    folder is removed, no clutter). This switch just forces "always keep, no prompt" - useful
     for unattended/automation runs. Nothing is transmitted; the .zip is emailed back manually.
+
+.PARAMETER NoGui
+    Force console-only output. By default a live progress window (status line + progress bar +
+    live log) is shown when a desktop is present; over SSH or a headless session it already
+    falls back to console. Use this to suppress the window on an interactive machine.
 
 .EXAMPLE
     .\Install-EVS-Xsquare-Unit.ps1                 # on failure: auto-saves a .zip; on success: asks
@@ -192,7 +197,7 @@ function Get-InstalledSqlInfo {
     if (-not $ver) { $ver = (Get-ItemProperty "$base\Setup" -Name Version -ErrorAction SilentlyContinue).Version }
     if (-not $ver) { $ver = "$major.0.0.0" }
     # a real, non-empty value the gate can read; RemoveQuotes() must leave something
-    # behind. The gate only tests non-emptiness — it never executes this path.
+    # behind. The gate only tests non-emptiness - it never executes this path.
     $cand = @(
         "C:\Program Files\Microsoft SQL Server\$folder\Setup Bootstrap\SQLServer$year\x64\SetupARP.exe",
         "C:\Program Files\Microsoft SQL Server\$folder\Setup Bootstrap\SQL$year\x64\SetupARP.exe"
@@ -212,12 +217,12 @@ function Get-InstalledSqlInfo {
 # aborts "SQL Server is required..." though SQL is present and running. This:
 #   (a) sweeps every existing SQL-Server / SMO uninstall key and fixes any whose
 #       UninstallString is empty (catches whatever leaf name the installed version uses,
-#       incl. the SMO GUID — no hardcoded 2016 key), and
+#       incl. the SMO GUID - no hardcoded 2016 key), and
 #   (b) ensures the canonical "Microsoft SQL Server SQLServer<year>" key exists non-empty
 #       when the engine is present (that was the exact broken shape seen on .64).
 # It never fabricates a key for a SQL that isn't installed (that would falsely pass the
 # gate, then fail a later step). Exact leaf name in (b) is verified for 2016; for newer
-# majors it follows the same naming pattern — the sweep in (a) covers it if it differs.
+# majors it follows the same naming pattern - the sweep in (a) covers it if it differs.
 function Repair-SqlArpUninstallString {
     $sql = Get-InstalledSqlInfo
     if (-not $sql) { return $false }   # SQL not installed yet; nothing to repair
@@ -240,21 +245,24 @@ function Repair-SqlArpUninstallString {
 
     $fixed = $false
     # (a) version-agnostic sweep of existing SQL/SMO uninstall keys with an empty value
+    # NOTE: a plain foreach (not Get-ChildItem | ForEach-Object) so that $fixed assignments
+    # update THIS function's variable; a ForEach-Object script block runs in a child scope
+    # where the write would be lost and the return value wrong.
     foreach ($h in $hives) {
-        Get-ChildItem $h -ErrorAction SilentlyContinue | ForEach-Object {
-            $leaf = $_.PSChildName
-            $dn   = (Get-ItemProperty $_.PSPath -Name DisplayName -ErrorAction SilentlyContinue).DisplayName
+        foreach ($item in (Get-ChildItem $h -ErrorAction SilentlyContinue)) {
+            $leaf = $item.PSChildName
+            $dn   = (Get-ItemProperty $item.PSPath -Name DisplayName -ErrorAction SilentlyContinue).DisplayName
             # leaf names vary: "...SQLServer2016" (2016) vs "...SQL2019"/"...SQL2022"
             # (2019/2022). Match "SQL Server" + any 4-digit year, plus SMO.
             if ($leaf -match 'SQL Server .*20\d\d|Shared Management Objects' -or
                 $dn   -match 'SQL Server .*20\d\d|Shared Management Objects') {
                 $nm = if ($dn) { $dn } else { "Microsoft $leaf" }
-                if (Set-EmptyArp $_.PSPath $nm $sql.Version $sql.ArpExe) { $fixed = $true }
+                if (Set-EmptyArp $item.PSPath $nm $sql.Version $sql.ArpExe) { $fixed = $true }
             }
         }
     }
     # (b) ensure the canonical year key exists non-empty (the .64 failure shape).
-    # The exact leaf differs by version — 2016 = "...SQLServer2016", 2019/2022 =
+    # The exact leaf differs by version - 2016 = "...SQLServer2016", 2019/2022 =
     # "...SQL2019"/"...SQL2022" (verified via a real SQL 2019 ARP entry). We can't see
     # which leaf the newer suite gates on, so ensure BOTH variants; the extra one is a
     # harmless cosmetic ARP entry pointing at a real SetupARP (the cleaner removes it).
@@ -298,7 +306,7 @@ function Collect-DiagBundle($dir, $setupExit, $err) {
     if ($sql) { ($sql.GetEnumerator() | ForEach-Object { '{0,-9}: {1}' -f $_.Key, $_.Value }) | Set-Content (Join-Path $dir 'sql-detection.txt') }
     else { 'Get-InstalledSqlInfo returned NULL (no SQL instance detected)' | Set-Content (Join-Path $dir 'sql-detection.txt') }
 
-    # the exact values the installer's gate reads — before/after our write is visible here
+    # the exact values the installer's gate reads - before/after our write is visible here
     $hives = @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
                'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall')
     $arp = foreach ($h in $hives) {
@@ -355,17 +363,17 @@ try {
 
         # apply the fix up-front each pass (no-op until SQL is present)
         if (Repair-SqlArpUninstallString) { Good "SQL ARP gate value repaired before this pass." }
-        else { Info "SQL not present yet / ARP value already valid — nothing to repair." }
+        else { Info "SQL not present yet / ARP value already valid - nothing to repair." }
 
         Step "Launching XFile3 setup (waiting for it to finish)"
         $proc = Start-Process -FilePath $Setup -ArgumentList $setupArgs -Wait -PassThru
         $setupExit = $proc.ExitCode
         Info "setup exit code: $setupExit"
 
-        if (Is-XsquareInstalled) { Good "XSquare suite is installed (services present) — DONE."; $result = 'installed'; break }
+        if (Is-XsquareInstalled) { Good "XSquare suite is installed (services present) - DONE."; $result = 'installed'; break }
 
         if ($pass -lt $MaxPasses) {
-            Warn "Suite not installed after pass $pass (expected on pass 1 — it installs SQL then aborts at the gate). Re-running with the ARP fix applied."
+            Warn "Suite not installed after pass $pass (expected on pass 1 - it installs SQL then aborts at the gate). Re-running with the ARP fix applied."
         } else {
             $result = 'failed'
             Warn "Reached max passes without the XSquare service appearing."

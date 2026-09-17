@@ -18,7 +18,7 @@ Initial tracked release.
 - Diagnostic `.zip` on the Desktop: auto-saved on failure, offered by dialog on success,
   forced with `-CollectLogs`; verbose end-of-run summary telling the operator what happened
   and exactly where the file is.
-- `PSScriptAnalyzerSettings.psd1` — both scripts pass with 0 findings.
+- Both scripts pass PSScriptAnalyzer (cosmetic style rules intentionally not applied).
 
 ### Known limitations
 - Static-verified only (parser + PSScriptAnalyzer). The WinForms UI, registry writes, and

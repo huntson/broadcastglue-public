@@ -12,6 +12,36 @@ Both are self-contained, self-elevating, and hold no IPs, hostnames, or credenti
 
 ---
 
+## Getting started (do this on the unit)
+
+You run these **on the EVS unit itself**, signed in as an administrator. No commands to
+type — you double-click and follow the window.
+
+**To install the XSquare suite:**
+
+1. Copy **`Install-EVS-Xsquare-Unit.ps1`** onto the unit (e.g. the Desktop).
+2. **Right-click it → Run with PowerShell.**
+3. Click **Yes** if Windows asks for administrator permission (the "User Account Control" prompt).
+4. If it asks you to pick the XFile3 setup file, browse to it and select it. Otherwise it
+   finds it on its own.
+5. Watch the window — it shows a progress bar and a running log. Leave it until it says
+   **Done**. It may restart the setup once on its own; that's normal.
+6. If anything goes wrong, it automatically saves a **log file (`.zip`) to the Desktop** and
+   tells you the exact name. **Email that `.zip` file back to us** and we'll take it from there.
+
+**To wipe a unit clean before reinstalling** (only when you intend to erase it):
+
+1. Copy **`Clean-EVS-Xsquare-Unit.ps1`** onto the unit and **right-click → Run with PowerShell**.
+2. It first shows you what it *would* remove and changes nothing — a safe preview.
+3. To actually remove things you confirm in the window (type/click **YES**). ⚠️ Removing SQL
+   **erases all databases on the unit** — only do this on a unit being rebuilt.
+4. When it finishes it saves a **log `.zip` to the Desktop**; email it back if we asked for it.
+
+> If Windows blocks the file with a "this came from the internet" warning: right-click the
+> `.ps1` → **Properties** → tick **Unblock** → **OK**, then run it again.
+
+---
+
 ## Background — the failure
 
 On rebuilt units the XSquare suite kept aborting with:
@@ -170,7 +200,7 @@ footprint (services, instances, folders, ARP keys) a given XFile3 version leaves
 - **Paths / key names** for 2017/2019/2022 verified against Microsoft docs and a real SQL
   2019 ARP entry; the write path on an actual 2019/2022 unit is **not yet runtime-tested**
   (no such unit available) — on 2016 it's the same code already proven in the field.
-- **Static analysis:** both scripts parse cleanly and pass PSScriptAnalyzer with **0
-  findings** (settings + justified suppressions in `PSScriptAnalyzerSettings.psd1`). This is
-  static verification only — the WinForms UI, registry writes, and install/teardown flow have
-  not been executed on Windows from here.
+- **Static analysis:** both scripts parse cleanly and pass PSScriptAnalyzer (only cosmetic
+  style rules — e.g. `Write-Host` for the colored console — are intentionally not applied).
+  This is static verification only — the WinForms UI, registry writes, and install/teardown
+  flow have not been executed on Windows from here.

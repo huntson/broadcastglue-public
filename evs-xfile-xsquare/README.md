@@ -170,3 +170,7 @@ footprint (services, instances, folders, ARP keys) a given XFile3 version leaves
 - **Paths / key names** for 2017/2019/2022 verified against Microsoft docs and a real SQL
   2019 ARP entry; the write path on an actual 2019/2022 unit is **not yet runtime-tested**
   (no such unit available) — on 2016 it's the same code already proven in the field.
+- **Static analysis:** both scripts parse cleanly and pass PSScriptAnalyzer with **0
+  findings** (settings + justified suppressions in `PSScriptAnalyzerSettings.psd1`). This is
+  static verification only — the WinForms UI, registry writes, and install/teardown flow have
+  not been executed on Windows from here.

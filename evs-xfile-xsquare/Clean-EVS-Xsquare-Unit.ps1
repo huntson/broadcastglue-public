@@ -85,6 +85,7 @@ param(
 
 $ErrorActionPreference = 'Continue'
 $ProgressPreference     = 'SilentlyContinue'
+$ScriptVersion          = '0.1.0'   # keep in sync with evs-xfile-xsquare/VERSION + CHANGELOG
 
 # ---------------------------------------------------------------- self-elevate
 $principal = New-Object Security.Principal.WindowsPrincipal(
@@ -488,6 +489,7 @@ if ($Reboot -and $Execute -and -not $RemoveSqlServer) { Act "reboot now" { Stop-
 # otherwise offered via a Yes/No dialog. Skipped on a non-interactive pass (SYSTEM reboot-resume
 # / SSH) so it never litters the SYSTEM profile's Desktop.
 try { Stop-Transcript | Out-Null } catch { $null = $_ }
+$script:zipPath = $null
 if ([Environment]::UserInteractive) {
     $keep = ($script:errCount -gt 0) -or $CollectLogs
     if (-not $keep) {
@@ -500,6 +502,7 @@ if ([Environment]::UserInteractive) {
             New-Item -ItemType Directory -Force -Path $dbDir | Out-Null
             Get-ChildItem $BackupRoot -Filter 'cleaner-*.log' -ErrorAction SilentlyContinue | Copy-Item -Destination $dbDir -ErrorAction SilentlyContinue
             @(
+                "Script ver : $ScriptVersion"
                 "Computer   : $env:COMPUTERNAME"
                 "When       : $(Get-Date -Format s)"
                 "Execute    : $Execute   RemoveSqlServer: $RemoveSqlServer   PurgeDatabases: $PurgeDatabases"
@@ -514,14 +517,30 @@ if ([Environment]::UserInteractive) {
             if (Test-Path $dzip) { Remove-Item $dzip -Force }
             Compress-Archive -Path (Join-Path $dbDir '*') -DestinationPath $dzip -Force
             Remove-Item $dbDir -Recurse -Force -ErrorAction SilentlyContinue
-            Good "Diagnostic bundle: $dzip"
-            Show-GuiNote "Diagnostic logs saved to:`n$dzip`n`nEmail that .zip back for triage." "EVS Cleaner - logs saved"
+            $script:zipPath = $dzip
+            # tell the operator plainly what happened and exactly where the file is
+            Step "SUMMARY - please read"
+            if ($script:errCount -gt 0) { Warn "Cleaner finished with $script:errCount action error(s) - review the log." }
+            else                        { Good "Cleaner finished with no action errors." }
+            Good "A diagnostic log bundle was saved to your Desktop:"
+            Good "    $dzip"
+            Info "The full transcript also remains in: $BackupRoot"
+            Info "WHAT TO DO NEXT: email that .zip file back for triage."
+            Show-GuiNote ("EVS / SQL unit cleaner" + "`n`n" +
+                "Action errors: $script:errCount" + "`n`n" +
+                "A diagnostic log bundle was saved to your Desktop:`n$dzip`n`n" +
+                "The full transcript also remains in:`n$BackupRoot`n`n" +
+                "Please EMAIL that .zip file back for triage.") "EVS Cleaner - diagnostic logs saved to your Desktop"
         } catch { Warn "could not build diagnostic zip: $($_.Exception.Message)" }
+    } else {
+        Good "Cleaner finished. No diagnostic bundle kept (declined); the full transcript remains in $BackupRoot."
     }
 }
 
 if ($script:Gui -and $script:form) {
-    Update-GuiStatus 'Complete - close this window.' 100
+    $cfinal = if ($script:zipPath) { "Done - diagnostic .zip on your Desktop (see log); email it back, then close." }
+              else                 { "Done - transcript in $BackupRoot.  Close this window." }
+    Update-GuiStatus $cfinal 100
     try { $script:pb.Value = 100; $script:btn.Enabled = $true } catch { $null = $_ }
     while ($script:form -and $script:form.Visible) { [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 120 }
 }

@@ -61,6 +61,7 @@ param(
 
 $ErrorActionPreference = 'Continue'
 $ProgressPreference     = 'SilentlyContinue'
+$ScriptVersion          = '0.1.0'   # keep in sync with evs-xfile-xsquare/VERSION + CHANGELOG
 
 # ---------------------------------------------------------------- self-elevate
 $principal = New-Object Security.Principal.WindowsPrincipal(
@@ -291,6 +292,7 @@ function Export-DiagBundle($dir, $setupExit, $err) {
     if (-not $dir) { return }
     $os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
     @(
+        "Script ver : $ScriptVersion"
         "Computer   : $env:COMPUTERNAME"
         "User       : $env:USERNAME"
         "When       : $(Get-Date -Format s)"
@@ -402,6 +404,7 @@ finally {
         if ((Confirm-Gui "Install completed successfully.`n`nSave a diagnostic log bundle to the Desktop anyway?" "EVS Installer") -eq $true) { $keep = $true }
     }
 
+    $script:zipPath = $null
     if ($keep) {
         Step "Collecting diagnostic bundle"
         try { Export-DiagBundle -dir $bundleDir -setupExit $setupExit -err $runError } catch { Warn "bundle collection issue: $($_.Exception.Message)" }
@@ -410,23 +413,37 @@ finally {
             if (Test-Path $zip) { Remove-Item $zip -Force }
             Compress-Archive -Path (Join-Path $bundleDir '*') -DestinationPath $zip -Force
             Remove-Item $bundleDir -Recurse -Force -ErrorAction SilentlyContinue
-            Good "Diagnostic bundle: $zip"
-            $msg = if ($failed) {
-                "Install did not complete (result=$result).`n`nDiagnostic logs saved to:`n$zip`n`nPlease email that .zip back for triage."
-            } else {
-                "Diagnostic logs saved to:`n$zip`n`nEmail that .zip back for triage."
-            }
-            Show-GuiNote $msg "EVS Installer - logs saved"
-        } catch { Warn "could not zip bundle: $($_.Exception.Message)  (folder kept: $bundleDir)" }
+            $script:zipPath = $zip
+            # tell the operator plainly what happened and exactly where the file is
+            Step "SUMMARY - please read"
+            if ($failed) { Warn  "The install did NOT complete.  Result: $result" }
+            else         { Good  "The install completed.  Result: $result" }
+            Good "A diagnostic log bundle was saved to your Desktop:"
+            Good "    $zip"
+            Info "WHAT TO DO NEXT: email that .zip file back for triage."
+            $msg = "EVS XFile3 / XSquare install" + "`n`n" +
+                   $(if ($failed) { "Result: $result (the install did NOT complete)." } else { "Result: $result (the install completed)." }) + "`n`n" +
+                   "A diagnostic log bundle was saved to your Desktop:`n$zip`n`n" +
+                   "Please EMAIL that .zip file back for triage."
+            Show-GuiNote $msg "EVS Installer - diagnostic logs saved to your Desktop"
+        } catch { Warn "could not zip bundle: $($_.Exception.Message)  (folder kept: $bundleDir)"; $script:zipPath = $bundleDir }
     } else {
         Remove-Item $bundleDir -Recurse -Force -ErrorAction SilentlyContinue   # success + declined: no litter
+        Step "SUMMARY"
+        Good "The install completed.  Result: $result"
+        Info "No diagnostic bundle was kept (you declined). Re-run with -CollectLogs if you want one."
     }
 }
 
 # ---------------------------------------------------------------- keep the window up
 if ($script:Gui -and $script:form) {
-    $final = if ($result -eq 'installed') { 'Done - XSquare installed. Close this window.' }
-             else { "Finished (result=$result). Review the log, then close this window." }
+    if ($script:zipPath) {
+        $final = "Result: $result  -  diagnostic .zip on your Desktop (see log below); email it back, then close."
+    } elseif ($result -eq 'installed') {
+        $final = "Done - XSquare installed.  No logs kept.  Close this window."
+    } else {
+        $final = "Finished (result=$result).  Review the log below, then close this window."
+    }
     Update-GuiStatus $final 0
     try { $script:pb.Value = 100 } catch { $null = $_ }
     try { $script:btn.Enabled = $true } catch { $null = $_ }

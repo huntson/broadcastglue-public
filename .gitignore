@@ -1,0 +1,15 @@
+# macOS Finder metadata
+.DS_Store
+
+# Runtime output the tools generate — per-machine diagnostics, never part of the repo.
+# The installer/cleaner write these to the operator's Desktop (and -BackupRoot); listed
+# here so a stray copy inside the repo is never committed.
+EVS-Install-Logs-*/
+EVS-Cleaner-Logs-*/
+EVS-Install-Logs-*.zip
+EVS-Cleaner-Logs-*.zip
+EVS-Cleaner-Backup/
+*.log
+
+# Local tooling scratch (portable PowerShell, analyzer modules, etc.)
+.ps-tools/

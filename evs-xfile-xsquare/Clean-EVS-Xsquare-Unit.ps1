@@ -3,7 +3,7 @@
     "Cleaner app" that fully removes the EVS Xsquare / XFile3 suite (and, optionally,
     its bundled SQL Server instance) from a unit so it can be reinstalled clean.
 
-    Grounded on the real layout observed on an EVS unit (XFA478360, Xsquare 3.16.5 +
+    Grounded on the real layout observed on a reference EVS unit (Xsquare 3.16.5 +
     XFile3 05.04 + SQL Server 2016 default instance MSSQLSERVER). It discovers
     components dynamically (ARP uninstall strings, InstallShield/Inno unins000.exe,
     services, folders, registry, DB files) rather than hard-coding version GUIDs, so

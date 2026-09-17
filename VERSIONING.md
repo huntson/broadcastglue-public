@@ -26,6 +26,18 @@ target; breaking changes may still land in a MINOR.
 3. Commit `chore(release): <subproject> vX.Y.Z`, then
    `git tag <subproject>/vX.Y.Z` and push with `--tags`.
 
+## Leak-scan pre-commit hook
+
+This is a public repo. A committed hook at `.githooks/pre-commit` blocks a commit whose
+staged changes contain real infra data (internal IPs, EVS unit serials like `XFA…`, API
+keys, private keys, the internal bug-report endpoint). Enable it once per clone:
+
+```
+git config core.hooksPath .githooks
+```
+
+(A genuine false positive can be bypassed with `git commit --no-verify`.)
+
 ## Runtime output is not versioned
 
 The diagnostic bundles the tools produce (`EVS-*-Logs-*.zip`, `-BackupRoot`, `*.log`) are

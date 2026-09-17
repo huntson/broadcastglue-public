@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Blocks a commit that would publish real infra data to this PUBLIC repo.
+# Scans STAGED content only. Bypass (not recommended): git commit --no-verify.
+set -u
+patterns=(
+  '10\.(96|111)\.[0-9]{1,3}\.[0-9]{1,3}'            # internal 10.x ranges used on-site
+  '192\.168\.[0-9]{1,3}\.[0-9]{1,3}'                # RFC1918
+  '172\.(1[6-9]|2[0-9]|3[01])\.[0-9]{1,3}\.[0-9]{1,3}'
+  'XF[A-Z][0-9]{5,}'                            # EVS unit serials (e.g. XFA478360)
+  'api-[0-9A-Fa-f]{20,}'                            # SMTP2GO / API keys
+  'bugreport\.broadcastglue\.com'                   # internal bug-report endpoint
+  '-----BEGIN [A-Z ]*PRIVATE KEY-----'              # private keys
+  '(password|passwd|secret|api[_-]?key)[[:space:]]*[:=][[:space:]]*["'"'"']?[^[:space:]"'"'"']{6,}'
+)
+staged=$(git diff --cached --name-only --diff-filter=ACM)
+[ -z "$staged" ] && exit 0
+fail=0
+for p in "${patterns[@]}"; do
+  # search staged blob content, not the worktree
+  hits=$(git grep --cached -nIE "$p" -- $staged 2>/dev/null | grep -vE '\.githooks/pre-commit')
+  if [ -n "$hits" ]; then
+    if [ $fail -eq 0 ]; then echo "COMMIT BLOCKED - possible real infra data in staged changes:"; fi
+    echo "  pattern: $p"; echo "$hits" | sed 's/^/    /'
+    fail=1
+  fi
+done
+if [ $fail -ne 0 ]; then
+  echo ""
+  echo "Remove it (this is a public repo). If it is a genuine false positive, commit with --no-verify."
+  exit 1
+fi
+exit 0
